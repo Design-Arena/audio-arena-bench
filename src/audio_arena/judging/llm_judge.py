@@ -31,6 +31,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 
+from audio_arena.judging.aggregation import aggregate_scores, format_metric
+
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
 except ImportError:
@@ -1178,8 +1180,8 @@ def write_outputs(
         realignment_notes: Optional notes about turn realignment (v3 feature)
         function_tracking: Optional dict tracking function call timing (v3 feature)
         turn_taking_analysis: Optional turn-taking analysis result (v4 feature)
-        expected_turns: Optional list of benchmark turns (index = turn number). Used so
-            turns with no required_function_call count as tool pass even if LLM returned false.
+        expected_turns: Benchmark turns (index = turn number), required to determine
+            scoring populations independently of judge labels.
         judge_name: Prefix for output filenames (default "claude" for backward compat).
         judge_version: Judge version string. Defaults to module-level JUDGE_VERSION.
         judge_model: Judge model string. Defaults to module-level JUDGE_MODEL.
@@ -1195,6 +1197,10 @@ def write_outputs(
     if turn_taking_supported is None:
         turn_taking_supported = turn_taking_analysis is not None
 
+    aggregation, applicability = aggregate_scores(
+        records, judgments, expected_turns, turn_taking_supported=turn_taking_supported
+    )
+
     # 1. {judge_name}_judged.jsonl
     with (run_dir / f"{judge_name}_judged.jsonl").open("w", encoding="utf-8") as f:
         for rec in records:
@@ -1203,6 +1209,7 @@ def write_outputs(
             output_rec = {
                 **rec,
                 "scores": judgment["scores"],
+                "score_applicability": applicability[turn],
                 "judge_reasoning": judgment["reasoning"],
             }
             # Include turn-taking issues if present
@@ -1211,48 +1218,8 @@ def write_outputs(
             f.write(json.dumps(output_rec, ensure_ascii=False) + "\n")
 
     # 2. {judge_name}_summary.json
-    # Core dimensions: tool_use, instruction_following, kb_grounding are out of ALL turns (75)
-    total_turns = len(judgments)
-    actual_tool_calls_by_turn = {
-        rec["turn"]: rec.get("tool_calls", [])
-        for rec in records
-    }
-
-    def _tool_pass(turn_num: int, j: Dict[str, Any]) -> bool:
-        tool_score = j["scores"].get("tool_use_correct")
-        actual_tool_calls = actual_tool_calls_by_turn.get(turn_num, [])
-        if expected_turns and turn_num < len(expected_turns):
-            if expected_turns[turn_num].get("required_function_call") is None:
-                return not actual_tool_calls if tool_score is None else tool_score is True
-        return tool_score is True
-
-    passes = {
-        "turn_taking": sum(
-            1 for j in judgments.values() if j["scores"].get("turn_taking", True)
-        ),
-        "instruction_following": sum(
-            1 for j in judgments.values() if j["scores"]["instruction_following"]
-        ),
-        "kb_grounding": sum(
-            1 for j in judgments.values() if j["scores"]["kb_grounding"]
-        ),
-        "tool_use_correct": sum(
-            1 for (turn_num, j) in judgments.items() if _tool_pass(turn_num, j)
-        ),
-    }
-    
-    # Extended dimensions: only out of applicable turns (ambiguity_handling, state_tracking)
-    ambiguity_applicable = [j for j in judgments.values() if j["scores"].get("ambiguity_handling") is not None]
-    state_applicable = [j for j in judgments.values() if j["scores"].get("state_tracking") is not None]
-    passes["ambiguity_handling"] = sum(1 for j in ambiguity_applicable if j["scores"]["ambiguity_handling"])
-    passes["state_tracking"] = sum(1 for j in state_applicable if j["scores"]["state_tracking"])
-    
-    # Denominators: core = 75, extended = applicable counts
-    totals = {
-        "tool_use_correct": total_turns,
-        "ambiguity_handling": len(ambiguity_applicable),
-        "state_tracking": len(state_applicable),
-    }
+    passes = aggregation["passes"]
+    totals = aggregation["category_totals"]
 
     # Count turns with turn-taking failures that also failed instruction_following
     # (these may be excusable)
@@ -1264,9 +1231,8 @@ def write_outputs(
     summary_data = {
         "model_name": model_name,
         "judge_name": judge_name,
-        "passes": passes,
+        **aggregation,
         "turns_scored": len(judgments),
-        "category_totals": totals,
         "judge_version": judge_version,
         "judge_model": judge_model,
         "judged_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -1296,13 +1262,16 @@ def write_outputs(
         f"",
         f"## Summary Metrics",
         f"",
-        f"- **Turn-Taking**: {passes['turn_taking']}/{total} ({passes['turn_taking']/total*100:.1f}%)",
-        f"- **Tool Use Correct**: {passes['tool_use_correct']}/{totals['tool_use_correct']} ({passes['tool_use_correct']/totals['tool_use_correct']*100:.1f}% of all turns)" if totals['tool_use_correct'] > 0 else f"- **Tool Use Correct**: N/A",
-        f"- **Instruction Following**: {passes['instruction_following']}/{total} ({passes['instruction_following']/total*100:.1f}%)",
-        f"- **KB Grounding**: {passes['kb_grounding']}/{total} ({passes['kb_grounding']/total*100:.1f}%)",
-        f"- **Ambiguity Handling**: {passes['ambiguity_handling']}/{totals['ambiguity_handling']} ({passes['ambiguity_handling']/totals['ambiguity_handling']*100:.1f}% of {totals['ambiguity_handling']} applicable turns)" if totals['ambiguity_handling'] > 0 else f"- **Ambiguity Handling**: N/A (no applicable turns)",
-        f"- **State Tracking**: {passes['state_tracking']}/{totals['state_tracking']} ({passes['state_tracking']/totals['state_tracking']*100:.1f}% of {totals['state_tracking']} applicable turns)" if totals['state_tracking'] > 0 else f"- **State Tracking**: N/A (no applicable turns)",
-        f"",
+        f"- **Turn-Taking**: {format_metric(passes['turn_taking'], totals['turn_taking'])}" if turn_taking_supported else "- **Turn-Taking**: N/A (not evaluated)",
+        f"- **Tool Use Correct**: {format_metric(passes['tool_use_correct'], totals['tool_use_correct'])} (required-call turns)",
+        f"- **Instruction Following**: {format_metric(passes['instruction_following'], totals['instruction_following'])}",
+        f"- **KB Grounding**: {format_metric(passes['kb_grounding'], totals['kb_grounding'])}",
+        f"- **Ambiguity Handling**: {format_metric(passes['ambiguity_handling'], totals['ambiguity_handling'])}",
+        f"- **State Tracking**: {format_metric(passes['state_tracking'], totals['state_tracking'])}",
+        "",
+        "Tool-use labels outside required-call turns are retained in the per-turn results and tool-use diagnostics.",
+        f"Missing applicable scores: {json.dumps(aggregation['missing_scores'])}",
+        "",
     ]
 
     # Add turn-taking analysis summary
@@ -1525,47 +1494,24 @@ def main():
         turn_taking_skip_reason=result.get("turn_taking_skip_reason"),
     )
 
-    # Print summary (tool/instruction/kb out of 75; ambiguity/state out of applicable)
-    total = len(result["judgments"])
-    actual_tool_calls_by_turn = {
-        rec["turn"]: rec.get("tool_calls", [])
-        for rec in records
-    }
-    tool_pass = 0
-    for turn_num, judgment in result["judgments"].items():
-        tool_score = judgment["scores"].get("tool_use_correct")
-        expected_turn = expected_turns[turn_num] if turn_num < len(expected_turns) else {}
-        if expected_turn.get("required_function_call") is None:
-            if not actual_tool_calls_by_turn.get(turn_num) and tool_score is None:
-                tool_pass += 1
-            elif tool_score is True:
-                tool_pass += 1
-        elif tool_score is True:
-            tool_pass += 1
-    amb_applicable = [j for j in result["judgments"].values() if j["scores"].get("ambiguity_handling") is not None]
-    state_applicable = [j for j in result["judgments"].values() if j["scores"].get("state_tracking") is not None]
-    passes = {
-        "turn_taking": sum(1 for j in result["judgments"].values() if j["scores"].get("turn_taking", True)),
-        "tool_use": tool_pass,
-        "instruction": sum(1 for j in result["judgments"].values() if j["scores"]["instruction_following"]),
-        "kb": sum(1 for j in result["judgments"].values() if j["scores"]["kb_grounding"]),
-        "ambiguity": sum(1 for j in amb_applicable if j["scores"]["ambiguity_handling"]),
-        "state": sum(1 for j in state_applicable if j["scores"]["state_tracking"]),
-    }
-    amb_total = len(amb_applicable)
-    state_total = len(state_applicable)
-
-    if result.get("turn_taking_supported", True):
-        print(f"Judged {total} turns (with turn-taking analysis)")
-    else:
-        suffix = f": {result.get('turn_taking_skip_reason')}" if result.get("turn_taking_skip_reason") else ""
-        print(f"Judged {total} turns (without turn-taking analysis{suffix})")
-    print(f"  Turn-taking: {passes['turn_taking']}/{total}")
-    print(f"  Tool use: {passes['tool_use']}/{total} (out of all turns)")
-    print(f"  Instruction following: {passes['instruction']}/{total}")
-    print(f"  KB grounding: {passes['kb']}/{total}")
-    print(f"  Ambiguity handling: {passes['ambiguity']}/{amb_total}" + (f" (of {amb_total} applicable)" if amb_total else " (N/A)"))
-    print(f"  State tracking: {passes['state']}/{state_total}" + (f" (of {state_total} applicable)" if state_total else " (N/A)"))
+    # Print the same saved counts used by downstream reports.
+    summary_data = json.loads((run_dir / "claude_summary.json").read_text())
+    total = summary_data["turns_scored"]
+    passes = summary_data["passes"]
+    totals = summary_data["category_totals"]
+    print(f"Judged {total} turns")
+    for dimension, label in (
+        ("turn_taking", "Turn-taking"),
+        ("tool_use_correct", "Tool use (required-call turns)"),
+        ("instruction_following", "Instruction following"),
+        ("kb_grounding", "KB grounding"),
+        ("ambiguity_handling", "Ambiguity handling"),
+        ("state_tracking", "State tracking"),
+    ):
+        if dimension == "turn_taking" and not summary_data["turn_taking_supported"]:
+            print("  Turn-taking: N/A (not evaluated)")
+        else:
+            print(f"  {label}: {format_metric(passes[dimension], totals[dimension])}")
 
     turn_taking_analysis = result.get("turn_taking_analysis")
     if turn_taking_analysis and turn_taking_analysis.get("failed_turns"):

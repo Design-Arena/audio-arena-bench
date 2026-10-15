@@ -232,7 +232,7 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
             TextPipeline._normalize_tool_args(args_b),
         )
 
-    def test_write_outputs_counts_unexpected_tool_call_as_tool_failure(self):
+    def test_write_outputs_preserves_unexpected_tool_failure_as_diagnostic(self):
         records = [
             {
                 "turn": 0,
@@ -290,6 +290,8 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
             summary = json.loads((run_dir / "openai_summary.json").read_text())
 
         self.assertEqual(summary["passes"]["tool_use_correct"], 0)
+        self.assertEqual(summary["category_totals"]["tool_use_correct"], 0)
+        self.assertEqual(summary["tool_use_diagnostics"]["failed_turns_without_required_call"], [0])
 
     def test_judge_prompt_allows_benign_benchmark_tool_mismatches(self):
         prompt = build_judge_system_prompt(cross_turn_realignment=False)
