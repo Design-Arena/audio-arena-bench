@@ -185,26 +185,19 @@ def build_sanity_report(flattened_rows: pd.DataFrame) -> dict:
     }
 
 
-def build_dimension_summary(flattened_rows: pd.DataFrame, summary_payload: dict | None = None) -> list[dict]:
+def build_dimension_summary(flattened_rows: pd.DataFrame) -> list[dict]:
     rows: list[dict] = []
     for column in SCORE_COLUMNS:
         values = flattened_rows[column]
         applicable = int(values.notna().sum())
         passed = int((values == True).sum())
         failed = int((values == False).sum())
-        missing = 0
-        if summary_payload and column in summary_payload.get("category_totals", {}):
-            applicable = summary_payload["category_totals"][column]
-            passed = summary_payload["passes"][column]
-            missing = len(summary_payload.get("missing_scores", {}).get(column, []))
-            failed = applicable - passed - missing
         rows.append(
             {
                 "dimension": column,
                 "applicable": applicable,
                 "passed": passed,
                 "failed": failed,
-                "missing": missing,
                 "not_applicable": int(len(flattened_rows) - applicable),
                 "pass_rate": round((passed / applicable) * 100, 1) if applicable else None,
             }
@@ -425,7 +418,7 @@ def build_review_payload(
         latency_summary=latency_summary,
     )
 
-    dimension_summary = build_dimension_summary(flattened_rows, summary_payload)
+    dimension_summary = build_dimension_summary(flattened_rows)
     metadata = {
         "benchmark_name": benchmark_name,
         "run_id": run_id,
@@ -453,9 +446,6 @@ def build_review_payload(
         "summary": {
             "passes": summary_payload.get("passes", {}),
             "category_totals": summary_payload.get("category_totals", {}),
-            "aggregation_version": summary_payload.get("aggregation_version"),
-            "missing_scores": summary_payload.get("missing_scores", {}),
-            "tool_use_diagnostics": summary_payload.get("tool_use_diagnostics", {}),
             "function_tracking": summary_payload.get("function_tracking", {}),
             "turn_taking_failures": summary_payload.get("turn_taking_failures", []),
             "overall_pass_rows": overall_pass_rows,
@@ -911,7 +901,7 @@ def build_html(payload: dict) -> str:
 
       <section class="section">
         <h2>Grader Metrics By Model Config</h2>
-        <p class="subtle">Pass rates use the saved scoring populations. Missing applicable labels remain in the denominator. Per-turn details preserve the raw judge labels, including tool-use diagnostics outside required-call turns.</p>
+        <p class="subtle">Pass rate is computed over applicable rows for each dimension. Missing dimensions are treated as not applicable, not failures.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -920,7 +910,6 @@ def build_html(payload: dict) -> str:
                 <th style="width: 140px;">Pass Rate</th>
                 <th style="width: 140px;">Pass / Applicable</th>
                 <th style="width: 140px;">Failures</th>
-                <th style="width: 140px;">Missing labels</th>
                 <th style="width: 140px;">N/A</th>
               </tr>
             </thead>
@@ -1051,8 +1040,8 @@ def build_html(payload: dict) -> str:
         }},
         {{
           label: "Tool Use",
-          value: (payload.summary.category_totals.tool_use_correct ?? payload.metadata.turn_count) === 0 ? "N/A" : `${{payload.summary.passes.tool_use_correct}} / ${{payload.summary.category_totals.tool_use_correct ?? payload.metadata.turn_count}}`,
-          note: "Judge passes over the saved tool-use scoring population.",
+          value: (payload.summary.category_totals?.tool_use_correct ?? payload.metadata.turn_count) === 0 ? "N/A" : `${{payload.summary.passes.tool_use_correct}} / ${{payload.summary.category_totals?.tool_use_correct ?? payload.metadata.turn_count}}`,
+          note: "Tool-use passes over applicable turns, including unexpected-call failures.",
         }},
         {{
           label: "Instruction Following",
@@ -1083,7 +1072,6 @@ def build_html(payload: dict) -> str:
             <td>${{escapeHtml(passRate)}}</td>
             <td>${{escapeHtml(`${{row.passed}} / ${{row.applicable}}`)}}</td>
             <td>${{escapeHtml(String(row.failed))}}</td>
-            <td>${{escapeHtml(String(row.missing ?? 0))}}</td>
             <td>${{escapeHtml(String(row.not_applicable))}}</td>
           </tr>
         `;

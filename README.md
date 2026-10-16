@@ -160,7 +160,7 @@ The judge evaluates each turn on up to 5 dimensions:
 
 | Dimension | Scored on | Description |
 |-----------|-----------|-------------|
-| `tool_use_correct` | Turns with a golden `required_function_call` | Did the model call the expected function with correct arguments? |
+| `tool_use_correct` | Required-call turns and unexpected-call failures, with non-null tool scores | Did the model call the expected function with correct arguments? |
 | `instruction_following` | Every turn | Did the model answer the question or advance the task? |
 | `kb_grounding` | Every turn | Is the response factually consistent with the knowledge base? |
 | `state_tracking` | Turns tagged `long_range_memory`, `cross_turn_reasoning`, `cancellation_flow`, `implicit_correction`, or `error_recovery` | Does the model correctly track information from earlier turns? |
@@ -405,9 +405,9 @@ The methodology below describes the scoring rubric used across all benchmarks. T
 
 ### Scoring Rubric
 
-**Category-aware aggregation.** Instruction following and KB grounding use all judged turns. Tool use uses only judged turns with a nonempty golden `required_function_call`; a multi-call turn contributes once. State tracking and ambiguity handling use the category tags listed above. Eligibility comes from the benchmark annotations, not from whether the judge emitted a non-null label. Partial runs include only their judged turn IDs.
+**Category-aware aggregation.** Scoring matches the implementation and tests in [Design-Arena/audio-agent-bench at d3659ba](https://github.com/Design-Arena/audio-agent-bench/tree/d3659ba573833e11ba50d1be12b6e2d0b3cba689). Instruction following and KB grounding use all judged turns. State tracking and ambiguity handling are requested according to the category tags above and aggregated over their non-null judge scores.
 
-Summaries save each denominator in `category_totals` and identify this convention as `aggregation_version: golden-scope-v1`. Missing applicable labels remain in the denominator and are listed in `missing_scores`. Raw judge labels are preserved in the judged JSONL alongside `score_applicability`. Tool calls on turns without a required call remain visible in `tool_use_diagnostics` and per-turn reviews (including early/late calls accepted by realignment), but do not enlarge the required-call denominator. Turn-taking has no eligible turns when that analysis is disabled. Existing saved summaries are unchanged until regenerated.
+For tool use, turns with no golden `required_function_call` have their score normalized to `null`, except that a judge's `false` label is preserved so unexpected calls count as failures in the main metric. The numerator counts `true` labels and the denominator counts non-null labels after normalization; a multi-call turn contributes once. A `null` label on a required-call turn is excluded, matching the reference implementation. If the benchmark specification is unavailable, labels are left unchanged. The normalized scores are saved in `<judge>_judged.jsonl`, and the Tool/State/Ambiguity denominators are saved in `category_totals`. Existing saved results are unchanged until regenerated.
 
 **Two-phase evaluation.** An initial turn-by-turn pass is followed by a realignment pass that detects early or late function calls and cascading effects. If a required call was made a turn early, later turns are not penalized for the "missing" call; if made late, the turn where it actually happened gets credit.
 
