@@ -1,8 +1,8 @@
-# Audio Arena: Multi-Turn Speech-to-Speech Evaluation Framework
+# AudioAgentBench: Multi-Turn Speech-to-Speech Evaluation Framework
 
-Audio Arena is a framework for evaluating speech-to-speech voice AI models through spoken audio. It includes 6 benchmarks spanning 221 total turns across different domains, testing knowledge retrieval, tool use, error recovery, adversarial attacks, long-range memory, state tracking, and numerical reasoning.
+AudioAgentBench is a framework for evaluating speech-to-speech voice AI models through spoken audio. It includes 6 benchmarks spanning 221 total turns across different domains, testing knowledge retrieval, tool use, error recovery, adversarial attacks, long-range memory, state tracking, and numerical reasoning.
 
-Built by [Arcada Labs](https://arcada.dev).
+Built by [The Intelligence Company](https://intelligence.ai).
 
 - **Leaderboard & results**: [audioarena.ai/leaderboard](https://audioarena.ai/leaderboard)
 - **Datasets on Hugging Face**: [arcada-labs](https://huggingface.co/arcada-labs)
@@ -429,7 +429,7 @@ We replaced the majority of the original turns and rebuilt the benchmark from sc
 
 ## Acknowledgments
 
-Audio Arena is built on [Pipecat](https://github.com/pipecat-ai/pipecat), the open-source framework for voice and multimodal AI. The original 30-turn evaluation was created by [Kwindla Hultman Kramer](https://github.com/kwindla) at [Daily](https://www.daily.co/) — see the [original blog post](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/) and [repo](https://github.com/kwindla/aiewf-eval).
+AudioAgentBench is built on [Pipecat](https://github.com/pipecat-ai/pipecat), the open-source framework for voice and multimodal AI. The original 30-turn evaluation was created by [Kwindla Hultman Kramer](https://github.com/kwindla) at [Daily](https://www.daily.co/) — see the [original blog post](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/) and [repo](https://github.com/kwindla/aiewf-eval).
 
 Judging is powered by [Claude](https://www.anthropic.com/) via the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk). Voice activity detection uses [Silero VAD](https://github.com/snakers4/silero-vad).
 
@@ -438,9 +438,9 @@ Judging is powered by [Claude](https://www.anthropic.com/) via the [Claude Agent
 If you use these benchmarks, please cite:
 
 ```bibtex
-@misc{audioarena2026,
-  title={Audio Arena: Multi-Turn Speech-to-Speech Evaluation Benchmarks},
-  author={Arcada Labs},
+@misc{audioagentbench2026,
+  title={AudioAgentBench: Multi-Turn Speech-to-Speech Evaluation Benchmarks},
+  author={{The Intelligence Company}},
   year={2026},
   url={https://audioarena.ai}
 }
