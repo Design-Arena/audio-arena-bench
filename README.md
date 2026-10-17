@@ -405,7 +405,9 @@ The methodology below describes the scoring rubric used across all benchmarks. T
 
 ### Scoring Rubric
 
-**Category-aware aggregation.** Scoring matches the implementation and tests in [Design-Arena/audio-agent-bench at d3659ba](https://github.com/Design-Arena/audio-agent-bench/tree/d3659ba573833e11ba50d1be12b6e2d0b3cba689). Instruction following and KB grounding use all judged turns. State tracking and ambiguity handling are requested according to the category tags above and aggregated over their non-null judge scores.
+**Category-aware aggregation.** Tool use, instruction following, KB grounding, state tracking, and ambiguity handling match the implementation and tests in [Design-Arena/audio-agent-bench at d3659ba](https://github.com/Design-Arena/audio-agent-bench/tree/d3659ba573833e11ba50d1be12b6e2d0b3cba689). Instruction following and KB grounding use all judged turns. State tracking and ambiguity handling are requested according to the category tags above and aggregated over their non-null judge scores.
+
+**Turn-taking availability.** Turn-taking is scored from audio timing analysis. Skipped checks, missing audio, and failed analysis are reported as `N/A`, with `null` scores and a zero applicable-turn count. Evaluated turns use passing turns / evaluated turns; a measured 0% remains 0%. Reports also respect `turn_taking_supported: false` in older saved summaries instead of treating their placeholder labels as measurements.
 
 For tool use, turns with no golden `required_function_call` have their score normalized to `null`, except that a judge's `false` label is preserved so unexpected calls count as failures in the main metric. The numerator counts `true` labels and the denominator counts non-null labels after normalization; a multi-call turn contributes once. A `null` label on a required-call turn is excluded, matching the reference implementation. If the benchmark specification is unavailable, labels are left unchanged. The normalized scores are saved in `<judge>_judged.jsonl`, and the Tool/State/Ambiguity denominators are saved in `category_totals`. Existing saved results are unchanged until regenerated.
 

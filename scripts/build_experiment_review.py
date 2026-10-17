@@ -34,6 +34,32 @@ def load_jsonl(jsonl_path: Path) -> list[dict]:
     return rows
 
 
+def normalize_turn_taking_for_report(judged_rows: list[dict], summary: dict) -> tuple[list[dict], dict]:
+    """Honor availability when reading both legacy and current judged artifacts."""
+    passes = summary.get("passes", {})
+    totals = summary.get("category_totals", {})
+    unavailable = (
+        summary.get("turn_taking_supported") is False
+        or totals.get("turn_taking") == 0
+        or ("turn_taking" in passes and passes["turn_taking"] is None)
+    )
+    if not unavailable:
+        return judged_rows, summary
+    rows = []
+    for row in judged_rows:
+        normalized = {**row, "scores": {**row.get("scores", {}), "turn_taking": None}}
+        normalized.pop("turn_taking_issues", None)
+        rows.append(normalized)
+    return rows, {
+        **summary,
+        "passes": {**passes, "turn_taking": None},
+        "category_totals": {**totals, "turn_taking": 0},
+        "turn_taking_supported": False,
+        "turn_taking_skip_reason": summary.get("turn_taking_skip_reason") or "Turn-taking was not evaluated.",
+        "turn_taking_failures": [],
+    }
+
+
 def format_status(value: bool | None) -> str:
     if value is True:
         return "pass"
@@ -334,6 +360,8 @@ def build_review_payload(
     if not judged_rows:
         raise ValueError(f"No rows found in {judged_path}")
 
+    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    judged_rows, summary_payload = normalize_turn_taking_for_report(judged_rows, summary_payload)
     normalized_rows = [build_record(raw_record) for raw_record in judged_rows]
     flattened_rows = pd.DataFrame(normalized_rows).sort_values("turn").reset_index(drop=True)
     flattened_rows["golden_user_text"] = flattened_rows["turn"].map(
@@ -386,7 +414,6 @@ def build_review_payload(
             f"Duplicate turn rows found in review data: {sanity_report['duplicate_turn_rows']}"
         )
 
-    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
 
     latency_values = pd.to_numeric(flattened_rows["latency_ms"], errors="coerce")
@@ -448,6 +475,8 @@ def build_review_payload(
             "category_totals": summary_payload.get("category_totals", {}),
             "function_tracking": summary_payload.get("function_tracking", {}),
             "turn_taking_failures": summary_payload.get("turn_taking_failures", []),
+            "turn_taking_supported": summary_payload.get("turn_taking_supported"),
+            "turn_taking_skip_reason": summary_payload.get("turn_taking_skip_reason"),
             "overall_pass_rows": overall_pass_rows,
             "empty_response_count": empty_response_count,
         },

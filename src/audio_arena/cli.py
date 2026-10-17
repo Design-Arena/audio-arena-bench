@@ -889,7 +889,7 @@ async def _run_rehydrated(
     help="Judge backend to use. Defaults to 'claude' for all benchmarks.",
 )
 @click.option("--judge-model", default=None, help="Model for judging (default: claude-opus-4-5 for Claude, gpt-5.2 for OpenAI)")
-@click.option("--skip-turn-taking", is_flag=True, help="Skip audio turn-taking analysis (faster; all turns count as turn_taking=True)")
+@click.option("--skip-turn-taking", is_flag=True, help="Skip audio turn-taking analysis (turn-taking is reported as N/A)")
 @click.option("--debug", is_flag=True, help="Enable debug logging")
 def judge(
     run_dir: str,
@@ -1033,12 +1033,14 @@ def judge(
 
     turn_taking_supported = summary.get("turn_taking_supported", True)
     turn_taking_skip_reason = summary.get("turn_taking_skip_reason")
-    if turn_taking_supported:
+    tt_total = summary.get("category_totals", {}).get("turn_taking", total)
+    if turn_taking_supported and tt_total and passes.get("turn_taking") is not None:
         click.echo(f"\nJudged {total} turns (with turn-taking analysis)")
-        click.echo(f"  Turn-taking: {passes.get('turn_taking', total)}/{total}")
+        click.echo(f"  Turn-taking: {passes['turn_taking']}/{tt_total}")
     else:
         suffix = f": {turn_taking_skip_reason}" if turn_taking_skip_reason else ""
         click.echo(f"\nJudged {total} turns (without turn-taking analysis{suffix})")
+        click.echo("  Turn-taking: N/A (not evaluated)")
     category_totals = summary.get("category_totals", {})
     tool_total = category_totals.get("tool_use_correct", total)
     amb_total = category_totals.get("ambiguity_handling", 0)
