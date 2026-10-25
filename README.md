@@ -1,8 +1,8 @@
-# Audio Arena: Multi-Turn Speech-to-Speech Evaluation Framework
+# AudioAgentBench: Multi-Turn Speech-to-Speech Evaluation Framework
 
-Audio Arena is a framework for evaluating speech-to-speech voice AI models through spoken audio. It includes 6 benchmarks spanning 221 total turns across different domains, testing knowledge retrieval, tool use, error recovery, adversarial attacks, long-range memory, state tracking, and numerical reasoning.
+AudioAgentBench is a framework for evaluating speech-to-speech voice AI models through spoken audio. It includes 6 benchmarks spanning 221 total turns across different domains, testing knowledge retrieval, tool use, error recovery, adversarial attacks, long-range memory, state tracking, and numerical reasoning.
 
-Built by [Arcada Labs](https://arcada.dev).
+Built by [The Intelligence Company](https://intelligence.ai).
 
 - **Leaderboard & results**: [audioarena.ai/leaderboard](https://audioarena.ai/leaderboard)
 - **Datasets on Hugging Face**: [arcada-labs](https://huggingface.co/arcada-labs)
@@ -160,11 +160,11 @@ The judge evaluates each turn on up to 5 dimensions:
 
 | Dimension | Scored on | Description |
 |-----------|-----------|-------------|
-| `tool_use_correct` | Every turn | Did the model call the expected function with correct arguments? |
+| `tool_use_correct` | Required-call turns and unexpected-call failures, with non-null tool scores | Did the model call the expected function with correct arguments? |
 | `instruction_following` | Every turn | Did the model answer the question or advance the task? |
 | `kb_grounding` | Every turn | Is the response factually consistent with the knowledge base? |
-| `state_tracking` | Turns tagged with long-range memory, cancellation flow, or implicit correction | Does the model correctly track information from earlier turns? |
-| `ambiguity_handling` | Turns tagged with ambiguous entity or compound ambiguity | Does the model correctly disambiguate entities and constraints? |
+| `state_tracking` | Turns tagged `long_range_memory`, `cross_turn_reasoning`, `cancellation_flow`, `implicit_correction`, or `error_recovery` | Does the model correctly track information from earlier turns? |
+| `ambiguity_handling` | Turns tagged `ambiguous_entity` | Does the model correctly disambiguate entities and constraints? |
 
 In plain language, these grader metrics mean:
 
@@ -405,7 +405,11 @@ The methodology below describes the scoring rubric used across all benchmarks. T
 
 ### Scoring Rubric
 
-**Category-aware dimensions.** Core dimensions (tool use, instruction following, KB grounding) are scored on every turn. `state_tracking` and `ambiguity_handling` are scored only on turns tagged with the relevant categories, so models are never penalized on out-of-scope dimensions.
+**Category-aware aggregation.** Instruction following and KB grounding use all judged turns. State tracking and ambiguity handling are requested according to the category tags above and aggregated over their non-null judge scores.
+
+**Turn-taking availability.** Turn-taking is scored from audio timing analysis. Skipped checks, missing audio, and failed analysis are reported as `N/A`, with `null` scores and a zero applicable-turn count. Evaluated turns use passing turns / evaluated turns; a measured 0% remains 0%. Reports also respect `turn_taking_supported: false` in older saved summaries instead of treating their placeholder labels as measurements.
+
+For tool use, turns with no golden `required_function_call` have their score normalized to `null`, except that a judge's `false` label is preserved so unexpected calls count as failures in the main metric. The numerator counts `true` labels and the denominator counts non-null labels after normalization; a multi-call turn contributes once. A `null` label on a required-call turn is excluded, matching the reference implementation. If the benchmark specification is unavailable, labels are left unchanged. The normalized scores are saved in `<judge>_judged.jsonl`, and the Tool/State/Ambiguity denominators are saved in `category_totals`. Existing saved results are unchanged until regenerated.
 
 **Two-phase evaluation.** An initial turn-by-turn pass is followed by a realignment pass that detects early or late function calls and cascading effects. If a required call was made a turn early, later turns are not penalized for the "missing" call; if made late, the turn where it actually happened gets credit.
 
@@ -427,7 +431,7 @@ We replaced the majority of the original turns and rebuilt the benchmark from sc
 
 ## Acknowledgments
 
-Audio Arena is built on [Pipecat](https://github.com/pipecat-ai/pipecat), the open-source framework for voice and multimodal AI. The original 30-turn evaluation was created by [Kwindla Hultman Kramer](https://github.com/kwindla) at [Daily](https://www.daily.co/) — see the [original blog post](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/) and [repo](https://github.com/kwindla/aiewf-eval).
+AudioAgentBench is built on [Pipecat](https://github.com/pipecat-ai/pipecat), the open-source framework for voice and multimodal AI. The original 30-turn evaluation was created by [Kwindla Hultman Kramer](https://github.com/kwindla) at [Daily](https://www.daily.co/) — see the [original blog post](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/) and [repo](https://github.com/kwindla/aiewf-eval).
 
 Judging is powered by [Claude](https://www.anthropic.com/) via the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk). Voice activity detection uses [Silero VAD](https://github.com/snakers4/silero-vad).
 
@@ -436,9 +440,9 @@ Judging is powered by [Claude](https://www.anthropic.com/) via the [Claude Agent
 If you use these benchmarks, please cite:
 
 ```bibtex
-@misc{audioarena2026,
-  title={Audio Arena: Multi-Turn Speech-to-Speech Evaluation Benchmarks},
-  author={Arcada Labs},
+@misc{audioagentbench2026,
+  title={AudioAgentBench: Multi-Turn Speech-to-Speech Evaluation Benchmarks},
+  author={{The Intelligence Company}},
   year={2026},
   url={https://audioarena.ai}
 }

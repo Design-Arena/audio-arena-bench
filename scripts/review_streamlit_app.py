@@ -338,7 +338,7 @@ def build_dimension_pass_rate_df(payload: dict) -> pd.DataFrame:
     if dimension_df.empty:
         return dimension_df
     dimension_df["pass_rate"] = (
-        pd.to_numeric(dimension_df["pass_rate"], errors="coerce").fillna(0.0) / 100.0
+        pd.to_numeric(dimension_df["pass_rate"], errors="coerce") / 100.0
     )
     return dimension_df.sort_values("pass_rate", ascending=True).reset_index(drop=True)
 
@@ -438,6 +438,9 @@ def render_visualizations(rows_df: pd.DataFrame, filtered_df: pd.DataFrame, payl
                 dimension_df["pass_rate"],
                 color="#3b6ea8",
             )
+            for index, rate in enumerate(dimension_df["pass_rate"]):
+                if pd.isna(rate):
+                    axis.text(0.01, index, "N/A", va="center")
             axis.set_title("Dimension Pass Rate")
             axis.set_xlabel("Pass rate")
             axis.set_ylabel("")
@@ -541,7 +544,10 @@ def render_single_run_view(payload: dict, error_analysis: str, source_path: str)
     )
     summary_columns[5].metric(
         "Tool Use",
-        str(payload["summary"]["passes"]["tool_use_correct"]),
+        (f"{payload['summary']['passes']['tool_use_correct']} / "
+         f"{payload['summary']['category_totals'].get('tool_use_correct', payload['metadata']['turn_count'])}")
+        if payload["summary"]["category_totals"].get("tool_use_correct", payload["metadata"]["turn_count"])
+        else "N/A",
     )
 
     st.subheader("Run Metadata")
