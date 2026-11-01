@@ -80,8 +80,8 @@ For each turn, evaluate SIX dimensions:
    - Turn-taking failures indicate audio timing issues (interruptions, overlaps, missing audio)
 
 2. **tool_use_correct** (bool or null):
-   - TRUE if no function call was expected AND the assistant did not call any tool
-   - FALSE if no function call was expected but the assistant still called a tool
+   - NULL if no function call was expected AND the assistant did not call any tool (the turn is not applicable to this dimension)
+   - FALSE if no function call was expected but the assistant still called a tool (counts as a tool-use failure in metrics)
    - TRUE if the assistant correctly called the expected function with semantically equivalent arguments
    - TRUE if a function call was expected but was already made in an earlier turn (realignment case)
    - TRUE if a late function call is made at this turn (the call eventually happened, credit this turn)
@@ -401,6 +401,8 @@ def get_turn_taking_support(run_dir: Path, skip_turn_taking: bool) -> tuple[bool
         return False, "Turn-taking analysis skipped by --skip-turn-taking."
 
     runtime = load_runtime_metadata(run_dir)
+    if runtime.get("turn_taking_supported") is False:
+        return False, runtime.get("turn_taking_skip_reason") or "Turn-taking is unavailable for this run."
     wav_path = run_dir / "conversation.wav"
     if wav_path.exists():
         return True, None
@@ -413,6 +415,37 @@ def get_turn_taking_support(run_dir: Path, skip_turn_taking: bool) -> tuple[bool
         )
 
     return False, "No parent conversation.wav found for turn-taking analysis."
+
+
+def prepare_turn_taking(
+    run_dir: Path, skip_turn_taking: bool, debug: bool = False,
+) -> tuple[Optional[dict[int, dict]], Optional[dict], bool, Optional[str]]:
+    """Load measured timing labels; skipped or failed analysis is unavailable."""
+    supported, reason = get_turn_taking_support(run_dir, skip_turn_taking)
+    analysis = None
+    data = None
+    if supported:
+        try:
+            from .turn_taking import analyze_turn_taking
+            analysis = analyze_turn_taking(run_dir).to_dict()
+            if analysis.get("error"):
+                reason = f"Turn-taking analysis failed: {analysis['error']}"
+            else:
+                data = {
+                    int(turn): result for turn, result in analysis.get("per_turn", {}).items()
+                    if isinstance(result.get("turn_taking"), bool)
+                }
+                if not data:
+                    reason = "Turn-taking analysis produced no evaluated turns."
+        except Exception as exc:
+            reason = f"Turn-taking analysis failed: {exc}"
+        supported = bool(data)
+    if debug:
+        if supported:
+            print(f"Turn-taking analysis evaluated {len(data)} turns.", file=sys.stderr)
+        elif reason:
+            print(reason, file=sys.stderr)
+    return data, analysis, supported, reason
 
 
 def build_judge_system_prompt(cross_turn_realignment: bool) -> str:
@@ -974,33 +1007,9 @@ async def judge_with_claude(
         mode_label = "with cross-turn realignment" if cross_turn_realignment else "without cross-turn realignment"
         print(f"Judging {len(records)} turns {mode_label}...", file=sys.stderr)
 
-    # Run turn-taking analysis when parent-level audio evidence is available.
-    turn_taking_data: Optional[Dict[int, Dict[str, Any]]] = None
-    turn_taking_analysis = None
-    turn_taking_supported, turn_taking_skip_reason = get_turn_taking_support(
-        run_dir, skip_turn_taking
+    turn_taking_data, turn_taking_analysis, turn_taking_supported, turn_taking_skip_reason = prepare_turn_taking(
+        run_dir, skip_turn_taking, debug
     )
-    if turn_taking_supported:
-        if debug:
-            print("Running turn-taking analysis...", file=sys.stderr)
-        try:
-            from .turn_taking import analyze_turn_taking
-            turn_taking_analysis = analyze_turn_taking(run_dir)
-            if turn_taking_analysis.error:
-                if debug:
-                    print(f"Turn-taking analysis error: {turn_taking_analysis.error}", file=sys.stderr)
-            else:
-                turn_taking_data = {
-                    idx: result.to_dict()
-                    for idx, result in turn_taking_analysis.per_turn.items()
-                }
-                if debug and turn_taking_analysis.failed_turns:
-                    print(f"Turn-taking failures: {turn_taking_analysis.failed_turns}", file=sys.stderr)
-        except Exception as e:
-            if debug:
-                print(f"Turn-taking analysis failed: {e}", file=sys.stderr)
-    elif debug and turn_taking_skip_reason:
-        print(f"Turn-taking analysis skipped: {turn_taking_skip_reason}", file=sys.stderr)
 
     system_prompt = build_judge_system_prompt(cross_turn_realignment)
     judge_version = JUDGE_VERSION if cross_turn_realignment else REHYDRATED_JUDGE_VERSION
@@ -1092,12 +1101,8 @@ async def judge_with_claude(
     for j in final_judgments:
         turn_num = j.get('turn')
         if turn_num is not None:
-            # Get turn_taking from Claude's response, defaulting to True if not provided
-            turn_taking = j.get('turn_taking', True)
-
-            # If we have turn_taking_data, use that as the source of truth
-            if turn_taking_data and turn_num in turn_taking_data:
-                turn_taking = turn_taking_data[turn_num].get('turn_taking', True)
+            # Only audio timing analysis can supply a turn-taking score.
+            turn_taking = (turn_taking_data or {}).get(turn_num, {}).get("turn_taking")
 
             # ambiguity_handling and state_tracking can be null if not applicable
             ambiguity = j.get('ambiguity_handling')
@@ -1137,7 +1142,7 @@ async def judge_with_claude(
         "realignment_notes": realignment_notes,
         "function_tracking": function_tracking,
         "cross_turn_realignment_applied": cross_turn_realignment,
-        "turn_taking_analysis": turn_taking_analysis.to_dict() if turn_taking_analysis else None,
+        "turn_taking_analysis": turn_taking_analysis,
         "summary": build_judge_summary(len(judgments), cross_turn_realignment),
         "model_name": model_name,
         "judge_version": judge_version,
@@ -1178,8 +1183,8 @@ def write_outputs(
         realignment_notes: Optional notes about turn realignment (v3 feature)
         function_tracking: Optional dict tracking function call timing (v3 feature)
         turn_taking_analysis: Optional turn-taking analysis result (v4 feature)
-        expected_turns: Optional list of benchmark turns (index = turn number). Used so
-            turns with no required_function_call count as tool pass even if LLM returned false.
+        expected_turns: Optional benchmark turns (index = turn number). Used to
+            normalize non-required tool-use labels to null, preserving FALSE failures.
         judge_name: Prefix for output filenames (default "claude" for backward compat).
         judge_version: Judge version string. Defaults to module-level JUDGE_VERSION.
         judge_model: Judge model string. Defaults to module-level JUDGE_MODEL.
@@ -1193,7 +1198,52 @@ def write_outputs(
     if realignment_applied is None:
         realignment_applied = bool(function_tracking)
     if turn_taking_supported is None:
-        turn_taking_supported = turn_taking_analysis is not None
+        turn_taking_supported = bool(turn_taking_analysis and turn_taking_analysis.get("per_turn"))
+    if turn_taking_analysis and turn_taking_analysis.get("error"):
+        turn_taking_supported = False
+        turn_taking_skip_reason = f"Turn-taking analysis failed: {turn_taking_analysis['error']}"
+
+    measured_turns = (turn_taking_analysis or {}).get("per_turn", {})
+    for turn_num, judgment in judgments.items():
+        if not turn_taking_supported:
+            judgment["scores"]["turn_taking"] = None
+        elif turn_taking_analysis is not None:
+            measured = measured_turns.get(turn_num, measured_turns.get(str(turn_num), {}))
+            judgment["scores"]["turn_taking"] = measured.get("turn_taking")
+        if judgment["scores"].get("turn_taking") is not False:
+            judgment.pop("turn_taking_issues", None)
+
+    turn_taking_applicable = [
+        j for j in judgments.values() if isinstance(j["scores"].get("turn_taking"), bool)
+    ]
+    if not turn_taking_applicable:
+        turn_taking_supported = False
+        turn_taking_skip_reason = turn_taking_skip_reason or "Turn-taking was not evaluated."
+
+    # tool_use_correct is applicable on:
+    #   - Turns whose benchmark spec has a required_function_call (the model
+    #     either makes the right call or it doesn't), AND
+    #   - Turns where no call was expected but the assistant still called a
+    #     tool (an unsolicited / false-positive call the judge marked FALSE).
+    # Turns where no call was expected AND none was made are not applicable
+    # and are normalized to None so they're excluded from the denominator
+    # instead of inflating it with vacuous passes.
+    def _is_tool_relevant_turn(turn_num: int) -> bool:
+        if not expected_turns or turn_num >= len(expected_turns):
+            # No spec available (legacy paths). Treat as applicable so the judge's
+            # True/False score still flows through.
+            return True
+        return expected_turns[turn_num].get("required_function_call") is not None
+
+    for turn_num, judgment in judgments.items():
+        if _is_tool_relevant_turn(turn_num):
+            continue
+        # No required call. Preserve the judge's FALSE (unsolicited tool call)
+        # so it counts against the model in metrics, but null out True/None so
+        # turns where the assistant correctly stayed silent don't pad the
+        # denominator with free passes.
+        if judgment["scores"].get("tool_use_correct") is not False:
+            judgment["scores"]["tool_use_correct"] = None
 
     # 1. {judge_name}_judged.jsonl
     with (run_dir / f"{judge_name}_judged.jsonl").open("w", encoding="utf-8") as f:
@@ -1211,24 +1261,20 @@ def write_outputs(
             f.write(json.dumps(output_rec, ensure_ascii=False) + "\n")
 
     # 2. {judge_name}_summary.json
-    # Core dimensions: tool_use, instruction_following, kb_grounding are out of ALL turns (75)
+    # Core dimensions: instruction_following and kb_grounding are scored on every
+    # turn. tool_use_correct, ambiguity_handling, and state_tracking are scored
+    # only on turns where the dimension is applicable (signalled by a non-null
+    # score), so their denominators are the count of applicable turns.
     total_turns = len(judgments)
-    actual_tool_calls_by_turn = {
-        rec["turn"]: rec.get("tool_calls", [])
-        for rec in records
-    }
 
-    def _tool_pass(turn_num: int, j: Dict[str, Any]) -> bool:
-        tool_score = j["scores"].get("tool_use_correct")
-        actual_tool_calls = actual_tool_calls_by_turn.get(turn_num, [])
-        if expected_turns and turn_num < len(expected_turns):
-            if expected_turns[turn_num].get("required_function_call") is None:
-                return not actual_tool_calls if tool_score is None else tool_score is True
-        return tool_score is True
+    tool_applicable = [j for j in judgments.values() if j["scores"].get("tool_use_correct") is not None]
+    ambiguity_applicable = [j for j in judgments.values() if j["scores"].get("ambiguity_handling") is not None]
+    state_applicable = [j for j in judgments.values() if j["scores"].get("state_tracking") is not None]
 
     passes = {
-        "turn_taking": sum(
-            1 for j in judgments.values() if j["scores"].get("turn_taking", True)
+        "turn_taking": (
+            sum(j["scores"]["turn_taking"] is True for j in turn_taking_applicable)
+            if turn_taking_applicable else None
         ),
         "instruction_following": sum(
             1 for j in judgments.values() if j["scores"]["instruction_following"]
@@ -1236,20 +1282,14 @@ def write_outputs(
         "kb_grounding": sum(
             1 for j in judgments.values() if j["scores"]["kb_grounding"]
         ),
-        "tool_use_correct": sum(
-            1 for (turn_num, j) in judgments.items() if _tool_pass(turn_num, j)
-        ),
+        "tool_use_correct": sum(1 for j in tool_applicable if j["scores"]["tool_use_correct"]),
+        "ambiguity_handling": sum(1 for j in ambiguity_applicable if j["scores"]["ambiguity_handling"]),
+        "state_tracking": sum(1 for j in state_applicable if j["scores"]["state_tracking"]),
     }
-    
-    # Extended dimensions: only out of applicable turns (ambiguity_handling, state_tracking)
-    ambiguity_applicable = [j for j in judgments.values() if j["scores"].get("ambiguity_handling") is not None]
-    state_applicable = [j for j in judgments.values() if j["scores"].get("state_tracking") is not None]
-    passes["ambiguity_handling"] = sum(1 for j in ambiguity_applicable if j["scores"]["ambiguity_handling"])
-    passes["state_tracking"] = sum(1 for j in state_applicable if j["scores"]["state_tracking"])
-    
-    # Denominators: core = 75, extended = applicable counts
+
     totals = {
-        "tool_use_correct": total_turns,
+        "turn_taking": len(turn_taking_applicable),
+        "tool_use_correct": len(tool_applicable),
         "ambiguity_handling": len(ambiguity_applicable),
         "state_tracking": len(state_applicable),
     }
@@ -1258,7 +1298,7 @@ def write_outputs(
     # (these may be excusable)
     turn_taking_affected_instruction = sum(
         1 for j in judgments.values()
-        if not j["scores"].get("turn_taking", True) and not j["scores"]["instruction_following"]
+        if j["scores"].get("turn_taking") is False and not j["scores"]["instruction_following"]
     )
 
     summary_data = {
@@ -1272,7 +1312,7 @@ def write_outputs(
         "judged_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "realignment_applied": realignment_applied,
         "function_tracking": function_tracking,
-        "turn_taking_failures": turn_taking_analysis.get("failed_turns", []) if turn_taking_analysis else [],
+        "turn_taking_failures": sorted(turn for turn, j in judgments.items() if j["scores"].get("turn_taking") is False),
         "turn_taking_affected_instruction": turn_taking_affected_instruction,
         "turn_taking_supported": turn_taking_supported,
         "turn_taking_skip_reason": turn_taking_skip_reason,
@@ -1296,8 +1336,9 @@ def write_outputs(
         f"",
         f"## Summary Metrics",
         f"",
-        f"- **Turn-Taking**: {passes['turn_taking']}/{total} ({passes['turn_taking']/total*100:.1f}%)",
-        f"- **Tool Use Correct**: {passes['tool_use_correct']}/{totals['tool_use_correct']} ({passes['tool_use_correct']/totals['tool_use_correct']*100:.1f}% of all turns)" if totals['tool_use_correct'] > 0 else f"- **Tool Use Correct**: N/A",
+        (f"- **Turn-Taking**: {passes['turn_taking']}/{totals['turn_taking']} ({passes['turn_taking']/totals['turn_taking']*100:.1f}%)"
+         if totals["turn_taking"] else f"- **Turn-Taking**: N/A ({turn_taking_skip_reason})"),
+        f"- **Tool Use Correct**: {passes['tool_use_correct']}/{totals['tool_use_correct']} ({passes['tool_use_correct']/totals['tool_use_correct']*100:.1f}% of {totals['tool_use_correct']} applicable turns)" if totals['tool_use_correct'] > 0 else f"- **Tool Use Correct**: N/A (no applicable turns)",
         f"- **Instruction Following**: {passes['instruction_following']}/{total} ({passes['instruction_following']/total*100:.1f}%)",
         f"- **KB Grounding**: {passes['kb_grounding']}/{total} ({passes['kb_grounding']/total*100:.1f}%)",
         f"- **Ambiguity Handling**: {passes['ambiguity_handling']}/{totals['ambiguity_handling']} ({passes['ambiguity_handling']/totals['ambiguity_handling']*100:.1f}% of {totals['ambiguity_handling']} applicable turns)" if totals['ambiguity_handling'] > 0 else f"- **Ambiguity Handling**: N/A (no applicable turns)",
@@ -1306,7 +1347,7 @@ def write_outputs(
     ]
 
     # Add turn-taking analysis summary
-    if turn_taking_analysis and turn_taking_analysis.get("failed_turns"):
+    if turn_taking_supported and turn_taking_analysis and turn_taking_analysis.get("failed_turns"):
         failed_turns = turn_taking_analysis["failed_turns"]
         lines.extend([
             f"## Turn-Taking Analysis",
@@ -1525,43 +1566,35 @@ def main():
         turn_taking_skip_reason=result.get("turn_taking_skip_reason"),
     )
 
-    # Print summary (tool/instruction/kb out of 75; ambiguity/state out of applicable)
+    # Print summary (tool/ambiguity/state out of applicable turns; instruction/kb out of all turns).
+    # write_outputs has already normalized tool_use_correct to None on turns whose benchmark spec
+    # has no required_function_call, so applicable counts are simply the non-null counts here.
     total = len(result["judgments"])
-    actual_tool_calls_by_turn = {
-        rec["turn"]: rec.get("tool_calls", [])
-        for rec in records
-    }
-    tool_pass = 0
-    for turn_num, judgment in result["judgments"].items():
-        tool_score = judgment["scores"].get("tool_use_correct")
-        expected_turn = expected_turns[turn_num] if turn_num < len(expected_turns) else {}
-        if expected_turn.get("required_function_call") is None:
-            if not actual_tool_calls_by_turn.get(turn_num) and tool_score is None:
-                tool_pass += 1
-            elif tool_score is True:
-                tool_pass += 1
-        elif tool_score is True:
-            tool_pass += 1
+    tool_applicable = [j for j in result["judgments"].values() if j["scores"].get("tool_use_correct") is not None]
     amb_applicable = [j for j in result["judgments"].values() if j["scores"].get("ambiguity_handling") is not None]
     state_applicable = [j for j in result["judgments"].values() if j["scores"].get("state_tracking") is not None]
     passes = {
-        "turn_taking": sum(1 for j in result["judgments"].values() if j["scores"].get("turn_taking", True)),
-        "tool_use": tool_pass,
+        "tool_use": sum(1 for j in tool_applicable if j["scores"]["tool_use_correct"]),
         "instruction": sum(1 for j in result["judgments"].values() if j["scores"]["instruction_following"]),
         "kb": sum(1 for j in result["judgments"].values() if j["scores"]["kb_grounding"]),
         "ambiguity": sum(1 for j in amb_applicable if j["scores"]["ambiguity_handling"]),
         "state": sum(1 for j in state_applicable if j["scores"]["state_tracking"]),
     }
+    tool_total = len(tool_applicable)
     amb_total = len(amb_applicable)
     state_total = len(state_applicable)
 
-    if result.get("turn_taking_supported", True):
+    saved_summary = json.loads((run_dir / "claude_summary.json").read_text())
+    tt_total = saved_summary["category_totals"]["turn_taking"]
+    if tt_total:
         print(f"Judged {total} turns (with turn-taking analysis)")
     else:
-        suffix = f": {result.get('turn_taking_skip_reason')}" if result.get("turn_taking_skip_reason") else ""
-        print(f"Judged {total} turns (without turn-taking analysis{suffix})")
-    print(f"  Turn-taking: {passes['turn_taking']}/{total}")
-    print(f"  Tool use: {passes['tool_use']}/{total} (out of all turns)")
+        print(f"Judged {total} turns (without turn-taking analysis)")
+    if tt_total:
+        print(f"  Turn-taking: {saved_summary['passes']['turn_taking']}/{tt_total}")
+    else:
+        print(f"  Turn-taking: N/A ({saved_summary['turn_taking_skip_reason']})")
+    print(f"  Tool use: {passes['tool_use']}/{tool_total}" + (f" (of {tool_total} applicable)" if tool_total else " (N/A)"))
     print(f"  Instruction following: {passes['instruction']}/{total}")
     print(f"  KB grounding: {passes['kb']}/{total}")
     print(f"  Ambiguity handling: {passes['ambiguity']}/{amb_total}" + (f" (of {amb_total} applicable)" if amb_total else " (N/A)"))

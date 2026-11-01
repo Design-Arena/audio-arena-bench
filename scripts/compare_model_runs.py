@@ -16,7 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from build_experiment_review import SCORE_COLUMNS
+from build_experiment_review import SCORE_COLUMNS, normalize_turn_taking_for_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -248,6 +248,7 @@ def build_run_record(
     runtime_payload: dict,
     judged_rows: list[dict],
 ) -> dict:
+    judged_rows, summary_payload = normalize_turn_taking_for_report(judged_rows, summary_payload)
     judged_df = pd.DataFrame(judged_rows)
     status_counts = compute_overall_status_counts(judged_rows)
     category_totals = summary_payload.get("category_totals", {})
@@ -272,6 +273,8 @@ def build_run_record(
         "runtime_parallel": runtime_payload.get("parallel"),
         "disable_vad": runtime_payload.get("disable_vad"),
         "turns_scored": total_turns,
+        "turn_taking_supported": summary_payload.get("turn_taking_supported"),
+        "turn_taking_skip_reason": summary_payload.get("turn_taking_skip_reason"),
         "pass_rows": status_counts["pass_rows"],
         "fail_rows": status_counts["fail_rows"],
         "incomplete_rows": status_counts["incomplete_rows"],
@@ -448,6 +451,9 @@ def create_metric_plot(metric_summary_df: pd.DataFrame, output_path: Path) -> No
             edgecolor="black",
             linewidth=0.8,
         )
+        for offset, rate in zip(offsets, model_metric_df["mean_pass_rate"]):
+            if pd.isna(rate):
+                axis.text(offset, 0.01, "N/A", rotation=90, ha="center", va="bottom", fontsize=8)
 
     axis.set_title("Pass Rate by Metric")
     axis.set_xlabel("")
@@ -551,6 +557,9 @@ def create_markdown_summary(
         ]
     )
     for _, row in metric_summary_df.iterrows():
+        if pd.isna(row["mean_pass_rate"]):
+            lines.append(f"- {row['model_name']} | {row['metric']}: N/A (not evaluated)")
+            continue
         lines.append(
             f"- {row['model_name']} | {row['metric']}: "
             f"{row['mean_pass_count']:.2f}/{row['mean_applicable']:.2f} "

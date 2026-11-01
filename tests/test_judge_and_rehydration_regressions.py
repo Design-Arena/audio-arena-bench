@@ -232,7 +232,15 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
             TextPipeline._normalize_tool_args(args_b),
         )
 
-    def test_write_outputs_counts_unexpected_tool_call_as_tool_failure(self):
+    def test_write_outputs_tool_use_denominator_counts_unsolicited_calls(self):
+        """tool_use_correct denominator includes both required-call turns and
+        turns where the model called a tool unexpectedly.
+
+        A turn where no call was required and the assistant correctly stayed
+        silent is not applicable (None) and must not pad the denominator. But
+        a turn where the assistant called a tool the spec did not ask for must
+        count as a failure so trigger-happy models are penalized.
+        """
         records = [
             {
                 "turn": 0,
@@ -251,7 +259,25 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
                         },
                     }
                 ],
-            }
+            },
+            {
+                "turn": 1,
+                "model_name": "test-model",
+                "user_text": "Please cancel my appointment.",
+                "assistant_text": "Done.",
+                "tool_calls": [
+                    {"name": "cancel_appointment", "args": {"session_id": "920101"}}
+                ],
+                "tool_results": [{"name": "cancel_appointment", "response": {"status": "ok"}}],
+            },
+            {
+                "turn": 2,
+                "model_name": "test-model",
+                "user_text": "Thanks, have a good day.",
+                "assistant_text": "You too!",
+                "tool_calls": [],
+                "tool_results": [],
+            },
         ]
         judgments = {
             0: {
@@ -263,15 +289,50 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
                     "ambiguity_handling": None,
                     "state_tracking": None,
                 },
-                "reasoning": "Unexpected tool call on a no-tool turn should fail tool use.",
-            }
+                "reasoning": "No call was expected but assistant called lookup_item.",
+            },
+            1: {
+                "scores": {
+                    "turn_taking": True,
+                    "tool_use_correct": True,
+                    "instruction_following": True,
+                    "kb_grounding": True,
+                    "ambiguity_handling": None,
+                    "state_tracking": None,
+                },
+                "reasoning": "Correct cancellation tool call.",
+            },
+            2: {
+                "scores": {
+                    "turn_taking": True,
+                    "tool_use_correct": None,
+                    "instruction_following": True,
+                    "kb_grounding": True,
+                    "ambiguity_handling": None,
+                    "state_tracking": None,
+                },
+                "reasoning": "Chit-chat turn, no call expected and none made.",
+            },
         }
         expected_turns = [
             {
                 "input": "What time does it start?",
                 "golden_text": "It starts at 9 AM.",
                 "required_function_call": None,
-            }
+            },
+            {
+                "input": "Please cancel my appointment.",
+                "golden_text": "Done.",
+                "required_function_call": {
+                    "name": "cancel_appointment",
+                    "args": {"session_id": "920101"},
+                },
+            },
+            {
+                "input": "Thanks, have a good day.",
+                "golden_text": "You too!",
+                "required_function_call": None,
+            },
         ]
 
         with TemporaryDirectory() as tmpdir:
@@ -288,8 +349,86 @@ class JudgeAndRehydrationRegressionTests(unittest.TestCase):
                 judge_model="test-judge",
             )
             summary = json.loads((run_dir / "openai_summary.json").read_text())
+            judged_lines = [
+                json.loads(line)
+                for line in (run_dir / "openai_judged.jsonl")
+                .read_text()
+                .splitlines()
+                if line.strip()
+            ]
 
+        # Turn 0: unsolicited call → judge FALSE must be preserved (counts in denom).
+        self.assertFalse(judged_lines[0]["scores"]["tool_use_correct"])
+        # Turn 1: required call made correctly → True.
+        self.assertTrue(judged_lines[1]["scores"]["tool_use_correct"])
+        # Turn 2: no call expected, none made → None (not applicable, excluded).
+        self.assertIsNone(judged_lines[2]["scores"]["tool_use_correct"])
+
+        # Denominator is required-call turns (1) + unsolicited-call turns (1) = 2.
+        # Numerator is the lone correct call.
+        self.assertEqual(summary["passes"]["tool_use_correct"], 1)
+        self.assertEqual(summary["category_totals"]["tool_use_correct"], 2)
+
+    def test_write_outputs_drops_vacuous_true_on_non_tool_turns(self):
+        """A judge TRUE on a non-tool turn with no actual tool call (e.g. legacy
+        outputs from before the prompt clarified to use NULL) should still be
+        normalized to None so it doesn't inflate the denominator."""
+        records = [
+            {
+                "turn": 0,
+                "model_name": "test-model",
+                "user_text": "Hi there.",
+                "assistant_text": "Hello!",
+                "tool_calls": [],
+                "tool_results": [],
+            },
+        ]
+        judgments = {
+            0: {
+                "scores": {
+                    "turn_taking": True,
+                    "tool_use_correct": True,
+                    "instruction_following": True,
+                    "kb_grounding": True,
+                    "ambiguity_handling": None,
+                    "state_tracking": None,
+                },
+                "reasoning": "Legacy judge output that returned True instead of null.",
+            },
+        }
+        expected_turns = [
+            {
+                "input": "Hi there.",
+                "golden_text": "Hello!",
+                "required_function_call": None,
+            },
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            write_outputs(
+                run_dir=run_dir,
+                records=records,
+                judgments=judgments,
+                summary="",
+                model_name="test-model",
+                expected_turns=expected_turns,
+                judge_name="openai",
+                judge_version="test-version",
+                judge_model="test-judge",
+            )
+            summary = json.loads((run_dir / "openai_summary.json").read_text())
+            judged_lines = [
+                json.loads(line)
+                for line in (run_dir / "openai_judged.jsonl")
+                .read_text()
+                .splitlines()
+                if line.strip()
+            ]
+
+        self.assertIsNone(judged_lines[0]["scores"]["tool_use_correct"])
         self.assertEqual(summary["passes"]["tool_use_correct"], 0)
+        self.assertEqual(summary["category_totals"]["tool_use_correct"], 0)
 
     def test_judge_prompt_allows_benign_benchmark_tool_mismatches(self):
         prompt = build_judge_system_prompt(cross_turn_realignment=False)

@@ -83,7 +83,7 @@ def load_rows() -> list[dict]:
         "Real Audio person2": Path("runs/conversation_bench/20260318T144759_gpt-realtime-1.5_5a7438fd"),
     }
     metric_defs = [
-        ("tool_use_correct", "Tool Use", "turns_scored"),
+        ("tool_use_correct", "Tool Use", "category_totals.tool_use_correct"),
         ("instruction_following", "Instruction", "turns_scored"),
         ("kb_grounding", "KB Grounding", "turns_scored"),
         ("ambiguity_handling", "Ambiguity", "category_totals.ambiguity_handling"),

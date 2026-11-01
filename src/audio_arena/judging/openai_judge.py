@@ -20,7 +20,7 @@ from .llm_judge import (
     build_judge_user_prompt,
     format_turns_for_judge,
     format_rehydrated_turns_for_judge,
-    get_turn_taking_support,
+    prepare_turn_taking,
     load_transcript,
     uses_cross_turn_realignment,
 )
@@ -104,33 +104,9 @@ async def judge_with_openai(
         mode_label = "with cross-turn realignment" if cross_turn_realignment else "without cross-turn realignment"
         print(f"Judging {len(records)} turns {mode_label} with OpenAI ({judge_model})...", file=sys.stderr)
 
-    # Run turn-taking analysis when parent-level audio evidence is available.
-    turn_taking_data: Optional[Dict[int, Dict[str, Any]]] = None
-    turn_taking_analysis = None
-    turn_taking_supported, turn_taking_skip_reason = get_turn_taking_support(
-        run_dir, skip_turn_taking
+    turn_taking_data, turn_taking_analysis, turn_taking_supported, turn_taking_skip_reason = prepare_turn_taking(
+        run_dir, skip_turn_taking, debug
     )
-    if turn_taking_supported:
-        if debug:
-            print("Running turn-taking analysis...", file=sys.stderr)
-        try:
-            from .turn_taking import analyze_turn_taking
-            turn_taking_analysis = analyze_turn_taking(run_dir)
-            if turn_taking_analysis.error:
-                if debug:
-                    print(f"Turn-taking analysis error: {turn_taking_analysis.error}", file=sys.stderr)
-            else:
-                turn_taking_data = {
-                    idx: result.to_dict()
-                    for idx, result in turn_taking_analysis.per_turn.items()
-                }
-                if debug and turn_taking_analysis.failed_turns:
-                    print(f"Turn-taking failures: {turn_taking_analysis.failed_turns}", file=sys.stderr)
-        except Exception as e:
-            if debug:
-                print(f"Turn-taking analysis failed: {e}", file=sys.stderr)
-    elif debug and turn_taking_skip_reason:
-        print(f"Turn-taking analysis skipped: {turn_taking_skip_reason}", file=sys.stderr)
 
     system_prompt = build_judge_system_prompt(cross_turn_realignment)
 
@@ -229,10 +205,7 @@ async def judge_with_openai(
     for j in final_judgments:
         turn_num = j.get('turn')
         if turn_num is not None:
-            turn_taking = j.get('turn_taking', True)
-
-            if turn_taking_data and turn_num in turn_taking_data:
-                turn_taking = turn_taking_data[turn_num].get('turn_taking', True)
+            turn_taking = (turn_taking_data or {}).get(turn_num, {}).get("turn_taking")
 
             ambiguity = j.get('ambiguity_handling')
             state = j.get('state_tracking')
@@ -269,7 +242,7 @@ async def judge_with_openai(
         "realignment_notes": realignment_notes,
         "function_tracking": function_tracking,
         "cross_turn_realignment_applied": cross_turn_realignment,
-        "turn_taking_analysis": turn_taking_analysis.to_dict() if turn_taking_analysis else None,
+        "turn_taking_analysis": turn_taking_analysis,
         "summary": build_judge_summary(len(judgments), cross_turn_realignment),
         "model_name": model_name,
         "judge_model": judge_model,

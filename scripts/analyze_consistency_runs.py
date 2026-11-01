@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from build_experiment_review import normalize_turn_taking_for_report
 
 METRIC_COLUMNS = [
     "turn_taking",
@@ -80,6 +81,10 @@ def load_comparison_details(comparison_dir: Path) -> tuple[pd.DataFrame, dict]:
         if not judged_path.exists():
             raise FileNotFoundError(f"Missing judged rows for {run_dir}")
         judged_rows = load_jsonl(judged_path)
+        summary_path = run_dir / "openai_summary.json"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            judged_rows, _ = normalize_turn_taking_for_report(judged_rows, summary)
         for row in judged_rows:
             scores = row.get("scores", {})
             failing_metrics = [
