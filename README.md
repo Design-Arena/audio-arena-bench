@@ -6,7 +6,7 @@ Built by [The Intelligence Company](https://intelligence.ai).
 
 - **Leaderboard & results**: [audioarena.ai/leaderboard](https://audioarena.ai/leaderboard)
 - **Datasets on Hugging Face**: [arcada-labs](https://huggingface.co/arcada-labs)
-- **Source code**: [github.com/Design-Arena/audio-arena-bench](https://github.com/Design-Arena/audio-arena-bench)
+- **Source code**: [github.com/Design-Arena/audio-agent-bench](https://github.com/Design-Arena/audio-agent-bench)
 
 ## What makes this different from text benchmarks
 
@@ -56,7 +56,7 @@ uv run audio-arena judge runs/appointment_bench/<timestamp>_claude-sonnet-4-5
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/Design-Arena/audio-arena-bench.git
+git clone https://github.com/Design-Arena/audio-agent-bench.git
 cd audio-arena
 uv sync
 ```
